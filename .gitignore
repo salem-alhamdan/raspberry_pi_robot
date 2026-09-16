@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Trained models (large binary files - train via notebooks/06 in Colab, don't commit)
+models/*.onnx
+models/*.pt
+models/*.pth
+
+# OS/editor cruft
+.DS_Store
+*.swp
+
+# Local scratch/output from smoke tests
+/tmp/
+*.log

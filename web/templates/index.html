@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Car Workshop - Robot Control</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <h1>Robot Control</h1>
+  <div id="status-indicator" class="status-indicator status-unknown">
+    <span id="status-dot" class="dot"></span>
+    <span id="status-text">connecting...</span>
+  </div>
+</header>
+
+<main>
+  <section class="panel camera-panel">
+    <img id="camera-feed" src="/video_feed" alt="Camera feed">
+  </section>
+
+  <section class="panel mode-panel">
+    <span class="mode-label">Manual</span>
+    <label class="switch">
+      <input type="checkbox" id="mode-toggle">
+      <span class="slider"></span>
+    </label>
+    <span class="mode-label">AI</span>
+  </section>
+
+  <section class="panel controls-panel" id="controls-panel">
+    <div class="dpad">
+      <button id="btn-forward" class="dpad-btn dpad-up" data-action="forward">&#9650;<br>FORWARD</button>
+      <div class="dpad-middle-row">
+        <button id="btn-left" class="dpad-btn dpad-left" data-action="left">&#9664;<br>LEFT</button>
+        <button id="btn-stop" class="dpad-btn dpad-stop" data-action="stop">STOP</button>
+        <button id="btn-right" class="dpad-btn dpad-right" data-action="right">&#9654;<br>RIGHT</button>
+      </div>
+      <button id="btn-backward" class="dpad-btn dpad-down" data-action="backward">&#9660;<br>BACKWARD</button>
+    </div>
+
+    <div class="speed-control">
+      <label for="speed-slider">Speed: <span id="speed-value">50</span>%</label>
+      <input type="range" id="speed-slider" min="0" max="100" value="50">
+    </div>
+
+    <p class="keyboard-hint">Keyboard: W forward &middot; S backward &middot; A left &middot; D right &middot; SPACE stop</p>
+  </section>
+
+  <button id="btn-estop">EMERGENCY STOP</button>
+
+  <section class="panel status-panel">
+    <h2>Status</h2>
+    <dl id="status-fields">
+      <dt>Mode</dt><dd id="s-mode">-</dd>
+      <dt>Action</dt><dd id="s-action">-</dd>
+      <dt>Stop reason</dt><dd id="s-stop-reason">-</dd>
+      <dt>Detected color</dt><dd id="s-color">-</dd>
+      <dt>Car detected</dt><dd id="s-car">-</dd>
+      <dt>Distance (m)</dt><dd id="s-distance">-</dd>
+    </dl>
+  </section>
+</main>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

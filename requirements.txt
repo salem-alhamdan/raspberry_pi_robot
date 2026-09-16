@@ -1,0 +1,73 @@
+# Python dependencies for the AI Car workshop project (whole project, all phases).
+#
+# Target: Raspberry Pi 4B, Debian 11 bullseye, Python 3.9.2, no venv (system-wide).
+#
+# Status column below reflects the Pi's state as of the start of this project:
+#   [on Pi]      already installed system-wide, listed here for completeness/pinning
+#   [install]    not yet installed, install via pip (or apt - see notes)
+#
+# NOTE on picamera2: it is NOT pip-installable on this OS/version. It must be
+# installed via apt (`sudo apt install -y python3-picamera2`) which pulls in the
+# matching libcamera bindings for this exact kernel/OS build. It is intentionally
+# left OUT of this file - see scripts/install_pi_dependencies.sh.
+#
+# NOTE on opencv: prefer the apt package `python3-opencv` on this Pi (see
+# scripts/install_pi_dependencies.sh for reasoning). opencv-python-headless is
+# listed here as the pip fallback for non-Pi dev machines or if apt's version
+# is too old for a later phase's needs.
+#
+# NOTE on simplejpeg: pip-installing opencv-python-headless pulls a modern
+# numpy (2.x) into --user site-packages, which shadows this Pi's system apt
+# numpy (1.19.5 listed above). apt's python3-simplejpeg (a picamera2 JPEG
+# encoder dependency) is compiled against that old system numpy's C ABI, so
+# once the newer numpy shadows it, `import picamera2` breaks with
+# "numpy.dtype size changed, may indicate binary incompatibility". Fixed by
+# `pip3 install --user --force-reinstall --no-cache-dir simplejpeg` (pulls a
+# piwheels wheel matching whatever numpy is actually active) - automated in
+# scripts/install_pi_dependencies.sh, not listed as a plain pip dependency
+# here since it is a conditional fixup, not an unconditional install.
+#
+# NOTE on onnxruntime (car object detection, src/vision/object_detection.py):
+# verified live on this Pi (aarch64, Python 3.9.2) that `pip3 install --user
+# onnxruntime` installs a prebuilt wheel (1.19.2 at verification time) with
+# no compile step, imports cleanly, and reports CPUExecutionProvider
+# available. src/vision/object_detection.py works without it/without a model
+# file present (car detection is simply skipped with a warning), so this is
+# a soft dependency, not a hard requirement for the rest of the project.
+
+gpiozero==1.6.2          # [on Pi]
+RPi.GPIO==0.7.0          # [on Pi]
+pigpio==1.78             # [on Pi]
+numpy==1.19.5            # [on Pi]
+Flask==1.1.2             # [on Pi, BUT CURRENTLY BROKEN - see below]
+
+# NOTE on Flask (web/app.py control server): the apt-installed Flask==1.1.2
+# above is NOT just old, it is currently non-importable on this Pi -
+# verified live: `import flask` raises `ImportError: cannot import name
+# 'escape' from 'jinja2'`, because an earlier --user pip install (most
+# likely a JupyterLab/nbconvert dependency) shadows apt's python3-jinja2
+# (2.11.3, what Flask 1.1.2 needs) with Jinja2 3.1.6 in --user
+# site-packages, which Python prefers. Same shape of problem as the
+# numpy/simplejpeg note above. Fix (automated in
+# scripts/install_pi_dependencies.sh, step 5): upgrade Flask + Werkzeug
+# together via pip --user to versions that work with the Jinja2 3.x already
+# present - verified live on this Pi with a real request round-tripped
+# through app.test_client():
+flask~=2.2.5             # [install] see scripts/install_pi_dependencies.sh step 5
+werkzeug~=2.2.3          # [install] MUST be pinned in the SAME install command as flask above -
+                         # an unpinned werkzeug resolves to 3.x, which Flask 2.2.5 cannot use
+                         # (AttributeError: module 'werkzeug' has no attribute '__version__',
+                         # confirmed live via app.test_client()).
+# itsdangerous>=2.0 and click>=8.0 (Flask 2.2.5's other deps) install cleanly
+# via the same pip command above with no extra pinning needed - verified live.
+
+jupyterlab               # [install] notebook environment for teaching, see install script
+tornado<6.5              # [install] PIN: tornado>=6.5 breaks jupyter_server 2.18.2's static
+                         # file serving (AttributeError: 'FileFindHandler' object has no
+                         # attribute 'allowed_symlink_directory'), causing every JS/CSS asset
+                         # to 500 and JupyterLab's UI to render completely blank. Reproduced
+                         # and fixed live on the Pi; keep pinned until jupyter_server is
+                         # upgraded past this regression.
+opencv-python-headless   # [install] pip fallback for OpenCV - prefer apt's python3-opencv on the Pi itself
+onnxruntime              # [install] car object detection (src/vision/object_detection.py) - verified installs
+                         # cleanly via pip --user on this Pi (aarch64, Python 3.9.2), see NOTE above
