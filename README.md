@@ -13,6 +13,25 @@ and sensors. The notebooks teach reusable modules under `src/`, not
 throwaway inline code — what you learn in a notebook is the same code the
 final autonomous robot and web controller actually run.
 
+## Quick start — install everything with one command
+
+On the Pi:
+
+```bash
+bash scripts/install_pi_dependencies.sh
+```
+
+That single, idempotent command installs (or fixes, if already broken/
+mismatched) everything this project needs: OpenCV, the picamera2/numpy ABI
+fixup, onnxruntime, JupyterLab, and Flask/Werkzeug — see the script for why
+each step exists, and re-run it any time, it's safe. `requirements.txt`
+documents every dependency/version pin for reference, but isn't meant to
+be `pip install -r`'d directly — `picamera2` is apt-only (not
+pip-installable at all), and a couple of others need a specific install
+order to avoid ABI conflicts, both of which the script handles and a plain
+`pip install -r` would not. See "Getting started — on the Pi" below for
+what to run next once dependencies are installed.
+
 ## Project layout
 
 ```
@@ -34,9 +53,15 @@ raspberry_pi_robot/
 │   └── robot/               Behavior layers composing hardware/vision modules
 │       ├── obstacle_avoidance.py   Ultrasonic-based avoid/auto-drive
 │       └── ai_drive.py             Autonomous color + object + obstacle driving loop
+│           (`python3 src/robot/ai_drive.py` for a live verbose smoke test,
+│           or `--detect-only` to just print car-detection results)
 ├── models/                 car_detection.onnx goes here (trained via notebook 06)
 ├── web/                    Flask web control server
 │   ├── app.py               Manual driving, AI-mode toggle, live status, camera stream
+│   ├── detect_preview.py    Standalone browser view of the camera with car-detection
+│   │                        boxes drawn live (`python3 web/detect_preview.py` →
+│   │                        http://<pi-ip>:5001/) — for checking detection accuracy;
+│   │                        don't run at the same time as app.py (both need the camera)
 │   ├── templates/, static/  Browser UI (D-pad, speed slider, keyboard control)
 ├── tests/
 │   └── TEST_REPORT.md      Running PASS/FAIL log for every feature, real-hardware verified

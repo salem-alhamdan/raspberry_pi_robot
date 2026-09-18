@@ -1,55 +1,70 @@
 """
-Car object detection via an ONNX model (SSD-family), using onnxruntime.
+Car object detection via an ONNX model (SSDLite320-MobileNetV3, COCO head
+fine-tuned on "car" only), using onnxruntime.
 
     detector = get_car_detector()                    # None if model missing/broken
     result = detect_cars(detector, frame)             # never raises, even if detector is None
     result["car_detected"], result["confidence"]
 
 --------------------------------------------------------------------------
-STATUS: the real model file (models/car_detection.onnx) does not exist yet.
-This module is written to be genuinely safe in that state: get_car_detector()
-returns None (logging one clear warning) instead of crashing, and
-detect_cars() treats detector=None as "no detection", cheaply, on every
-call - this matters because ai_drive.py calls detect_cars() ~10x/second and
-that path must never throw and never do real work when there is no model.
-
-onnxruntime itself IS installed and verified working on this Pi (aarch64,
-Debian 11 bullseye, Python 3.9.2): `pip3 install --user onnxruntime`
-installed a prebuilt wheel (1.19.2 at verification time, no compilation
-needed) and it imports cleanly with CPUExecutionProvider available. See
-scripts/install_pi_dependencies.sh and requirements.txt for where that is
-installed. So the gap right now is purely "no model file", not "onnxruntime
-doesn't work here".
+STATUS: models/car_detection.onnx exists and loads. get_car_detector() still
+returns None (logging one clear warning) if onnxruntime isn't installed or
+the file is missing/broken, and detect_cars() treats detector=None as "no
+detection", cheaply, on every call - this matters because ai_drive.py calls
+detect_cars() ~10x/second and that path must never throw and never do real
+work when there is no model.
 --------------------------------------------------------------------------
 
 --------------------------------------------------------------------------
-WHAT IS VERIFIED VS. BEST-EFFORT PLACEHOLDER - READ BEFORE TRUSTING THIS
---------------------------------------------------------------------------
-Everything in the "ADJUST THIS ONCE THE REAL MODEL EXISTS" section below
-(_preprocess() and _parse_ssd_output()) is a REASONABLE DEFAULT based on the
-most common SSD-MobileNet-family ONNX export/serving convention (the same
-convention OpenCV's own DNN SSD tutorials and the classic Caffe/TF
-"DetectionOutput" layer use), NOT something verified against the real
-car_detection.onnx model, because that file does not exist yet. Concretely,
-assumed here:
-    - Input: single tensor, NCHW, float32, resized to 300x300, RGB order,
-      pixel values scaled to [0, 1] (divide by 255).
-    - Output: single tensor shaped like [1, 1, N, 7], where each of the N
-      rows is [image_id, class_id, confidence, x1, y1, x2, y2] with box
-      coordinates normalized to [0, 1] of the input image.
-    - class_id for "car": CAR_CLASS_ID in config.py, defaulted to 3 (COCO's
-      conventional "car" category id in the label maps most SSD-MobileNet
-      ONNX exports/tutorials use) - again a reasonable default, not
-      confirmed against this specific model.
+INPUT/OUTPUT CONTRACT - VERIFIED against the real model file, not assumed
+(via session.get_inputs()/get_outputs() and one real onnxruntime inference
+call - see notebooks/06_ssd_training.ipynb section 17-18 for where this was
+first verified at export time, and the session used to re-verify here):
 
-Once the real model is provided, verify (do not assume) the above by
-inspecting `session.get_inputs()` / `session.get_outputs()` (name, shape,
-dtype) and running one real inference on a known test image, then update
-_preprocess()/_parse_ssd_output()/CAR_CLASS_ID to match. If the real model
-turns out to be a different SSD export flavor (e.g. separate boxes/scores/
-classes output tensors instead of one combined [1,1,N,7] tensor), only
-_parse_ssd_output() needs to change - detect_cars()'s public return shape
-stays the same for ai_drive.py.
+    - Input: single tensor "input", rank 3 **[3, height, width]** - NO
+      batch dimension. This is a torchvision detection-model export
+      (`torch.onnx.export(model, ([dummy_chw_tensor],), ...)`), which
+      traces on a *list* of unbatched CHW images, not a batched NCHW
+      tensor - unlike most SSD-MobileNet tutorials/exports. height/width
+      are dynamic axes, and training itself never forced a fixed square
+      resize (see notebook 06 section 10's transform pipeline - only
+      ToImage+ToDtype, no Resize), so this module does not force one
+      either: frames are preprocessed at their native captured resolution.
+      RGB order, pixel values scaled to [0, 1] (divide by 255) - the
+      model's own internal GeneralizedRCNNTransform does ImageNet
+      mean/std normalization, so no manual mean/std subtraction here.
+
+    - Output: three separate tensors - "boxes" [N,4] float32 (absolute
+      **pixel** xyxy coordinates in the *input tensor's* H/W, NOT
+      normalized 0-1), "labels" ..., "scores" ... .
+
+    - THE NAME/CONTENT SWAP (found by actually running inference and
+      inspecting raw values, not just trusting the declared names):
+      the tensor NAMED "labels" is float32 and holds the **confidence
+      scores** (0-1); the tensor NAMED "scores" is int64 and holds the
+      **class ids**. This is backwards from torchvision's own convention
+      (labels=int64 class ids, scores=float32 confidences) and from
+      notebooks/06_ssd_training.ipynb's `output_names=["boxes","labels",
+      "scores"]` export call - the traced model's actual output tuple
+      order didn't match that list positionally, so onnx.export bound the
+      names to the wrong tensors. The underlying values are NOT corrupted
+      (nothing gets truncated/cast-lossy), just mislabeled - see
+      _resolve_output_roles() below, which maps roles by each output's
+      actual dtype/shape instead of trusting its name, so this keeps
+      working even if a future re-export fixes the naming.
+
+    - class_id for "car": CAR_CLASS_ID in config.py = 3. VERIFIED against
+      notebook 06's `car_label_idx` (read from the pretrained COCO weights'
+      own `weights.meta["categories"]` list at training time, since the
+      classification head was fine-tuned in place rather than replaced -
+      the model still speaks full COCO class ids). A real inference on
+      random noise input reproduced class id 3 as the top prediction,
+      consistent with this.
+
+If the model is ever re-exported differently (e.g. a real batch dimension
+added, or box coordinates normalized), only _preprocess()/
+_resolve_output_roles()/_parse_ssd_output() need to change - detect_cars()'s
+public return shape stays the same for ai_drive.py.
 --------------------------------------------------------------------------
 
 Run this file directly for a standalone smoke test (works even with no
@@ -59,6 +74,7 @@ model file present - that is the point):
 
 import logging
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -81,66 +97,91 @@ except ImportError:
 
 import cv2  # noqa: E402
 
-# =============================================================================
-# ADJUST THIS ONCE THE REAL MODEL EXISTS - see the module docstring's
-# "what is verified vs. best-effort placeholder" section above.
-# =============================================================================
-_MODEL_INPUT_SIZE = (300, 300)  # (width, height)
+
+@dataclass
+class _CarDetector:
+    """Wraps an onnxruntime session plus its output-role mapping, resolved
+    once at load time by _resolve_output_roles() - see the module
+    docstring's "THE NAME/CONTENT SWAP" section for why this can't just be
+    looked up by name each call.
+    """
+    session: "ort.InferenceSession"
+    input_name: str
+    output_names: list  # session.get_outputs() order - matches session.run(None, ...)'s return order
+    boxes_name: str
+    class_id_name: str
+    confidence_name: str
+
+
+def _resolve_output_roles(session):
+    """Figure out which of the model's 3 output tensors is boxes/class-ids/
+    confidences by actual dtype/shape, not by trusting its name - see the
+    module docstring's "THE NAME/CONTENT SWAP" section. Raises ValueError
+    if the model's output shape doesn't look like this SSD's 3-tensor
+    convention at all (caught by get_car_detector()'s broad except).
+    """
+    outputs = session.get_outputs()
+    if len(outputs) != 3:
+        raise ValueError(f"expected 3 output tensors (boxes/labels/scores), got {len(outputs)}")
+
+    boxes = [o for o in outputs if o.shape and o.shape[-1] == 4]
+    if len(boxes) != 1:
+        raise ValueError(f"expected exactly one output shaped [*, 4] for boxes, found {len(boxes)}")
+    boxes_name = boxes[0].name
+
+    remaining = [o for o in outputs if o.name != boxes_name]
+    int_ones = [o for o in remaining if "int" in o.type]
+    float_ones = [o for o in remaining if o not in int_ones]
+    if len(int_ones) != 1 or len(float_ones) != 1:
+        raise ValueError(
+            f"expected one int-typed (class ids) and one float-typed (confidences) "
+            f"output among the non-box outputs, got types {[o.type for o in remaining]}"
+        )
+    class_id_name = int_ones[0].name
+    confidence_name = float_ones[0].name
+
+    if confidence_name != "labels" or class_id_name != "scores":
+        # Not necessarily wrong - just means a re-export changed the naming
+        # convention this was verified against. Logged, not fatal.
+        logger.info(
+            "object_detection: output name/role mapping differs from the "
+            "swap this module was verified against (boxes=%r, class_ids=%r, "
+            "confidences=%r) - if this is a freshly re-exported model, that's fine.",
+            boxes_name, class_id_name, confidence_name,
+        )
+
+    return boxes_name, class_id_name, confidence_name
 
 
 def _preprocess(frame):
-    """BGR frame -> NCHW float32 [1,3,300,300] tensor scaled to [0, 1].
-
-    PLACEHOLDER convention for a typical SSD-MobileNet ONNX export - see the
-    module docstring. Verify against the real model's session.get_inputs()
-    once it exists (shape, dtype, and whether it expects [0,1], [-1,1], or
-    mean-subtracted input) and update this function if it differs.
+    """BGR frame -> rank-3 CHW float32 [3,H,W] tensor scaled to [0, 1], at
+    the frame's native resolution - see the module docstring's INPUT/OUTPUT
+    CONTRACT section for why there's no batch dim and no forced resize.
     """
-    resized = cv2.resize(frame, _MODEL_INPUT_SIZE)
-    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)  # frame is BGR - see camera.py
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # frame is BGR - see camera.py
     normalized = rgb.astype(np.float32) / 255.0
-    chw = normalized.transpose(2, 0, 1)  # HWC -> CHW
-    return np.expand_dims(chw, axis=0)  # add batch dim -> NCHW
+    return normalized.transpose(2, 0, 1)  # HWC -> CHW, no batch dim
 
 
-def _parse_ssd_output(raw_outputs):
-    """Parse onnxruntime's raw output list into a plain list of detections.
-
-    PLACEHOLDER convention (classic SSD "DetectionOutput" shape) - see the
-    module docstring. Each returned dict: {"class_id": int, "confidence":
-    float, "bbox": (x1, y1, x2, y2) normalized 0-1}. Update this function
-    once the real model's actual output tensor(s) are known.
+def _parse_ssd_output(raw_outputs, detector):
+    """Parse onnxruntime's raw output list (boxes/class-ids/confidences,
+    per detector's resolved role mapping) into a plain list of detections:
+    {"class_id": int, "confidence": float, "bbox": (x1, y1, x2, y2) in
+    absolute pixel coordinates of the frame passed to _preprocess()}.
     """
-    if not raw_outputs:
-        return []
+    by_name = dict(zip(detector.output_names, raw_outputs))
+    boxes = np.asarray(by_name[detector.boxes_name])
+    class_ids = np.asarray(by_name[detector.class_id_name])
+    confidences = np.asarray(by_name[detector.confidence_name])
 
-    output = np.asarray(raw_outputs[0])
-    if output.size == 0:
-        return []
-
-    # Expected [1, 1, N, 7] (or already [N, 7]) - reshape defensively rather
-    # than assuming the exact rank, since export tooling sometimes differs
-    # on how many leading singleton dims it keeps.
-    try:
-        rows = output.reshape(-1, output.shape[-1])
-    except ValueError:
-        logger.warning(
-            "object_detection: unexpected model output shape %s - cannot "
-            "parse detections with the assumed SSD [*, 7] convention. "
-            "Update _parse_ssd_output() for the real model's actual format.",
-            output.shape,
-        )
-        return []
-
+    n = boxes.shape[0]
     detections = []
-    for row in rows:
-        if row.shape[0] < 7:
-            continue
-        _image_id, class_id, confidence, x1, y1, x2, y2 = row[:7]
+    for i in range(n):
+        x1, y1, x2, y2 = boxes[i]
         detections.append(
             {
-                "class_id": int(class_id),
-                "confidence": float(confidence),
+                "class_id": int(round(float(class_ids[i]))),
+                "confidence": float(confidences[i]),
                 "bbox": (float(x1), float(y1), float(x2), float(y2)),
             }
         )
@@ -178,6 +219,7 @@ def get_car_detector(model_path=CAR_DETECTION_MODEL_PATH):
 
     try:
         session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+        boxes_name, class_id_name, confidence_name = _resolve_output_roles(session)
     except Exception:
         logger.warning(
             "object_detection: failed to load model at %s - car object "
@@ -187,8 +229,19 @@ def get_car_detector(model_path=CAR_DETECTION_MODEL_PATH):
         )
         return None
 
-    logger.info("object_detection: loaded car detection model from %s", model_path)
-    return session
+    detector = _CarDetector(
+        session=session,
+        input_name=session.get_inputs()[0].name,
+        output_names=[o.name for o in session.get_outputs()],
+        boxes_name=boxes_name,
+        class_id_name=class_id_name,
+        confidence_name=confidence_name,
+    )
+    logger.info(
+        "object_detection: loaded car detection model from %s (boxes=%r, class_ids=%r, confidences=%r)",
+        model_path, boxes_name, class_id_name, confidence_name,
+    )
+    return detector
 
 
 def detect_cars(detector, frame, confidence_threshold=CAR_DETECTION_CONFIDENCE_THRESHOLD):
@@ -211,20 +264,16 @@ def detect_cars(detector, frame, confidence_threshold=CAR_DETECTION_CONFIDENCE_T
 
     try:
         input_tensor = _preprocess(frame)
-        input_name = detector.get_inputs()[0].name
-        raw_outputs = detector.run(None, {input_name: input_tensor})
-        detections = _parse_ssd_output(raw_outputs)
+        raw_outputs = detector.session.run(None, {detector.input_name: input_tensor})
+        detections = _parse_ssd_output(raw_outputs, detector)
     except Exception:
-        # Inference on a real model with placeholder pre/post-processing can
-        # very plausibly fail (wrong input shape, wrong output format) until
-        # this is verified against the real model - see the module
-        # docstring. Never let that crash the ~10Hz caller; just report "no
-        # detection this frame" and log once per failure so it's visible.
+        # Should not normally happen now that pre/post-processing is
+        # verified against the real model (see module docstring), but a
+        # frame-specific oddity (e.g. an unexpected camera resolution)
+        # should still degrade gracefully rather than crash the ~10Hz
+        # caller. Logged so it's visible if it ever fires.
         logger.warning(
-            "object_detection: inference failed this frame - treating as "
-            "no detection. If this happens every frame, _preprocess()/"
-            "_parse_ssd_output() likely need updating for the real model's "
-            "actual input/output format (see module docstring).",
+            "object_detection: inference failed this frame - treating as no detection.",
             exc_info=True,
         )
         return {"car_detected": False, "confidence": None, "detections": []}

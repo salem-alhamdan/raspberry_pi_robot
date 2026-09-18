@@ -138,6 +138,9 @@ pattern.
 
 Run this file directly on the Pi to drive standalone:
     python3 src/robot/ai_drive.py
+Or, to just check car-detection accuracy against the live camera without
+touching any motors/LED/ultrasonic hardware:
+    python3 src/robot/ai_drive.py --detect-only
 """
 
 import logging
@@ -456,7 +459,7 @@ class AIDriveController:
         except (ValueError, RuntimeError, OSError):
             logger.info("ai_drive: could not install a SIGTERM handler - use request_stop().")
 
-    def run(self, max_duration_s=None):
+    def run(self, max_duration_s=None, verbose=False):
         """Run the ~AI_DRIVE_LOOP_HZ detect -> decide -> act loop until
         stopped.
 
@@ -467,6 +470,14 @@ class AIDriveController:
         request_stop(), or a SIGTERM) - so max_duration_s is OPTIONAL here
         and defaults to None (run until stopped). Pass a value if you want
         a bounded run anyway (e.g. for testing).
+
+        verbose=True prints one line per loop iteration with what was
+        detected (color, car_detected/confidence, distance) and what
+        _decide_and_act() decided to do (action/stop_reason) - see
+        get_status()'s docstring for the field meanings. Off by default
+        because web/app.py's HardwareManager runs this loop in AI mode at
+        ~10Hz continuously and must not spam server logs; the __main__
+        smoke test below turns it on.
 
         Stops when ANY of: request_stop() was called, SIGTERM was received
         (main thread only), max_duration_s elapsed (if given), or
@@ -500,6 +511,19 @@ class AIDriveController:
                     car_confidence=car_result["confidence"],
                 )
                 self._decide_and_act(distance_m, color, car_result)
+
+                if verbose:
+                    s = self.status
+                    car = (
+                        f"car_detected={s['car_detected']} (confidence={s['car_confidence']:.2f})"
+                        if s["car_confidence"] is not None
+                        else f"car_detected={s['car_detected']}"
+                    )
+                    reason = f" ({s['stop_reason']})" if s["stop_reason"] else ""
+                    print(
+                        f"distance={s['distance_m']} color={s['detected_color']} {car} "
+                        f"-> action={s['action']}{reason}"
+                    )
 
                 elapsed = time.monotonic() - iteration_start
                 remaining = self.loop_interval_s - elapsed
@@ -536,23 +560,78 @@ class AIDriveController:
         cleanup_camera(self.camera)
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s: %(message)s")
-
-    print("AI drive smoke test: starting AIDriveController.")
-    print(
-        "SAFETY: motors/ultrasonic are not physically wired yet, so this is "
-        "safe to run as-is. Once wired, ALWAYS lift the robot off the "
-        "ground / wheels free-spinning before running this."
-    )
+def _run_detect_only_preview():
+    """Open ONLY the camera (no motors/LED/ultrasonic) and print car-
+    detection results per frame, so detection accuracy/confidence can be
+    checked against what the camera actually sees before trusting AI mode
+    to drive on it. See src/vision/object_detection.py's module docstring
+    for the verified input/output contract this relies on.
+    """
+    print("Car-detection accuracy check: opening camera only (no motors/LED/ultrasonic).")
     print("Press Ctrl+C to stop.")
 
-    controller = AIDriveController()
+    camera = get_camera()
+    detector = get_car_detector()
+    if detector is None:
+        print("No car detector available (see warning above) - nothing to test.")
+        cleanup_camera(camera)
+        return
+
+    frame_num = 0
     try:
-        # Bounded here only for an unattended smoke test; interactive use
-        # would normally call controller.run() with no max_duration_s and
-        # rely on Ctrl+C / request_stop() / SIGTERM instead.
-        controller.run(max_duration_s=30)
+        while True:
+            frame = capture_frame(camera)
+            result = detect_cars(detector, frame)
+            frame_num += 1
+            if result["confidence"] is not None:
+                top = f"confidence={result['confidence']:.3f}"
+            else:
+                top = "no car-class detection above threshold"
+            print(
+                f"frame {frame_num}: car_detected={result['car_detected']} {top} "
+                f"({len(result['detections'])} raw detections this frame)"
+            )
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\nStopped.")
     finally:
-        controller.cleanup()
-        print("AI drive controller cleaned up, all GPIO/camera released.")
+        cleanup_camera(camera)
+        print("Camera released.")
+
+
+if __name__ == "__main__":
+    import argparse
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s: %(message)s")
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--detect-only", action="store_true",
+        help="Just open the camera and print car-detection results per frame "
+             "(no motors/LED/ultrasonic touched) - for checking detection "
+             "accuracy/confidence against the live camera.",
+    )
+    args = parser.parse_args()
+
+    if args.detect_only:
+        _run_detect_only_preview()
+    else:
+        print("AI drive smoke test: starting AIDriveController.")
+        print(
+            "SAFETY: motors/ultrasonic are not physically wired yet, so this is "
+            "safe to run as-is. Once wired, ALWAYS lift the robot off the "
+            "ground / wheels free-spinning before running this."
+        )
+        print("Press Ctrl+C to stop.")
+
+        controller = AIDriveController()
+        try:
+            # Bounded here only for an unattended smoke test; interactive use
+            # would normally call controller.run() with no max_duration_s and
+            # rely on Ctrl+C / request_stop() / SIGTERM instead. verbose=True
+            # so detection + the decided action print live - see run()'s
+            # docstring.
+            controller.run(max_duration_s=30, verbose=True)
+        finally:
+            controller.cleanup()
+            print("AI drive controller cleaned up, all GPIO/camera released.")
