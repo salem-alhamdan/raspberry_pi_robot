@@ -105,7 +105,10 @@ degrades gracefully (skips car detection, never crashes) until it exists.
 
 **Before running more than one GPIO-touching program at once**, read
 `SAFETY.md`'s "GPIO exclusivity" section — e.g. don't leave a notebook
-kernel running while also starting `web/app.py`.
+kernel running while also starting `web/app.py`. This matters even more
+if you've installed the auto-start service below, since then `web/app.py`
+is running continuously from boot onward unless you stop it first — see
+"Stopping the web service" below.
 
 ## Hardware target
 
@@ -131,7 +134,52 @@ Raspberry Pi 4 Model B Rev 1.5 (4GB), Debian 11 bullseye, Python 3.9.2. See
    hardware once wired.
 
 4. Once everything's wired and tested, `python3 web/app.py` starts the
-   browser control server (`http://<pi-ip>:5000`).
+   browser control server (`http://<pi-ip>:5000`) for a single foreground
+   session. To have it start automatically on every boot instead, see the
+   next section.
+
+## Running the web server automatically on boot
+
+`scripts/install_web_service.sh` installs a systemd service
+(`ai-car-web`) that starts `web/app.py` on every boot, so the browser
+controller is always available without SSHing in and starting it by hand.
+
+```bash
+bash scripts/install_web_service.sh
+```
+
+This installs/enables/starts the service in one step (safe to re-run).
+It runs as the `admin` user (already in the `gpio`/`video` groups — see
+`HARDWARE.md`), not root, and restarts automatically if it crashes.
+
+Check it's working:
+```bash
+sudo systemctl status ai-car-web      # is it running?
+sudo journalctl -u ai-car-web -f      # live logs, Ctrl+C to stop watching
+```
+
+### Stopping the web service
+
+**Stop it before running any notebook or other script that opens the
+camera or GPIO pins** — `web/app.py` and a notebook kernel can't safely
+hold the same camera/GPIO handles at once (see "GPIO exclusivity" above
+and `SAFETY.md`).
+
+```bash
+sudo systemctl stop ai-car-web        # stop it now (for this boot)
+```
+
+Start it again when you're done with the notebook:
+```bash
+sudo systemctl start ai-car-web
+```
+
+To stop it AND prevent it from starting again on the next boot:
+```bash
+sudo systemctl disable --now ai-car-web
+```
+(`bash scripts/install_web_service.sh` re-enables and starts it again
+later, if you want it back.)
 
 ## Training the SSD car-detection model — on your PC, via Google Colab
 
