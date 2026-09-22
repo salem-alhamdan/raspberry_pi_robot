@@ -32,6 +32,19 @@ order to avoid ABI conflicts, both of which the script handles and a plain
 `pip install -r` would not. See "Getting started — on the Pi" below for
 what to run next once dependencies are installed.
 
+**Note on newer Pi OS images (Debian 12/13, e.g. a fresh SD card flashed
+recently):** the original target for this project was Debian 11
+(bullseye)/Python 3.9.2. Debian 12+'s pip enforces
+[PEP 668](https://peps.python.org/pep-0668/) and refuses plain
+`pip install --user` with an `externally-managed-environment` error, which
+previously broke the onnxruntime/JupyterLab/Flask install steps on a fresh
+Debian 13 (trixie) card. `scripts/install_pi_dependencies.sh` now retries
+with `--break-system-packages` automatically when it hits that specific
+error, so the one-line install above just works on both bullseye and
+newer images — no extra steps needed. If you're on an even older copy of
+this repo without that fix, `git pull` (or re-copy the repo to the SD
+card) before running the install script.
+
 ## Project layout
 
 ```
