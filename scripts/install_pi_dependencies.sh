@@ -55,6 +55,23 @@
 #     breaks static JS/CSS serving and renders the JupyterLab UI completely
 #     blank - confirmed and fixed live on this Pi (see the JupyterLab
 #     section below for the full explanation).
+#   - jupyter-notebook (apt, on top of the pip JupyterLab above): a --user
+#     pip install only puts the `jupyter` command on PATH via ~/.profile,
+#     which is read by LOGIN shells (e.g. `ssh pi ...` with no command
+#     attached). It is NOT read by the non-login interactive shell that a
+#     desktop terminal window opens, and this Pi's default ~/.bashrc does
+#     not add ~/.local/bin either - reproduced live: a student opening a
+#     plain terminal on the Pi and typing `jupyter lab` gets
+#     `jupyter: command not found` even though pip reports JupyterLab
+#     installed successfully. Editing ~/.bashrc per-account is not a fix
+#     that survives a fresh Pi OS install for the next student. Installing
+#     `jupyter-notebook`/`jupyter` via apt puts them in /usr/bin, which is
+#     on PATH by default for every account, every shell type, on a stock
+#     Pi OS image - verified live: `jupyter --version` resolves to
+#     /usr/bin/jupyter with no PATH/.bashrc changes needed. This gives
+#     students a `jupyter` command that just works from a fresh terminal;
+#     the pip-installed JupyterLab above is still what backs the modern
+#     `jupyter lab` UI once PATH is set up (e.g. via SSH login shell).
 #   - Flask (web/app.py control server): VERIFIED LIVE ON THIS PI that the
 #     apt-installed Flask 1.1.2 (from requirements.txt's "[on Pi]" baseline)
 #     is CURRENTLY BROKEN, not just old: `import flask` raises
@@ -215,7 +232,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Flask/Jinja2/Werkzeug fixup (pip, --user, no sudo) - see the design-notes
+# 5. jupyter-notebook + jupyter (apt, sudo) - system-wide, PATH-safe.
+#    See the design-notes comment above for the full root cause: a --user
+#    pip install alone leaves `jupyter` unresolvable in a plain desktop
+#    terminal on a fresh Pi. This step is what actually fixes that for
+#    students, independent of the pip JupyterLab install above.
+# ---------------------------------------------------------------------------
+echo
+echo "--- jupyter-notebook (apt) ---"
+if [ "$(command -v jupyter 2>/dev/null)" = "/usr/bin/jupyter" ]; then
+    echo "System-wide jupyter (/usr/bin/jupyter) already installed, skipping."
+else
+    echo "Installing jupyter-notebook + jupyter via apt (requires sudo password)..."
+    sudo apt-get update || echo "WARNING: apt-get update failed, continuing anyway..."
+    sudo apt-get install -y jupyter-notebook jupyter \
+        || echo "WARNING: apt-get install jupyter-notebook/jupyter failed - install manually later (sudo apt-get install -y jupyter-notebook jupyter)."
+
+    if [ "$(command -v jupyter 2>/dev/null)" = "/usr/bin/jupyter" ]; then
+        echo "System-wide jupyter installed successfully (/usr/bin/jupyter)."
+    else
+        echo "WARNING: /usr/bin/jupyter still not found after apt install - students may hit 'jupyter: command not found' in a plain terminal. Investigate manually."
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Flask/Jinja2/Werkzeug fixup (pip, --user, no sudo) - see the design-notes
 #    comment above for the full root cause. The check below actually
 #    exercises Flask (build an app, route a request through test_client())
 #    rather than just `import flask`, because the broken states observed on
@@ -251,6 +292,12 @@ fi
 
 echo
 echo "=== Done ==="
-echo "If this is the first time installing user-site pip packages, make sure"
-echo "\$HOME/.local/bin is on your PATH so the 'jupyter-lab' command is found:"
+echo "The 'jupyter' command (classic Notebook UI) is installed system-wide via"
+echo "apt and works from any terminal with no PATH setup - this is what"
+echo "students should use: jupyter notebook --ip=0.0.0.0 --no-browser"
+echo
+echo "If you specifically want the newer JupyterLab UI ('jupyter lab'), that"
+echo "one was pip-installed to \$HOME/.local/bin, which is only on PATH in a"
+echo "login shell (e.g. after 'ssh pi@<ip>'), not in a plain desktop terminal."
+echo "To make 'jupyter lab' work there too:"
 echo '  echo '"'"'export PATH="$HOME/.local/bin:$PATH"'"'"' >> ~/.bashrc && source ~/.bashrc'

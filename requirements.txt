@@ -68,6 +68,17 @@ tornado<6.5              # [install] PIN: tornado>=6.5 breaks jupyter_server 2.1
                          # to 500 and JupyterLab's UI to render completely blank. Reproduced
                          # and fixed live on the Pi; keep pinned until jupyter_server is
                          # upgraded past this regression.
+#
+# NOTE on jupyter-notebook / jupyter (apt, NOT pip - intentionally not a line
+# in this file): the jupyterlab pip package above only puts the `jupyter`
+# command on PATH via ~/.profile, which a plain desktop terminal on the Pi
+# does not read - reproduced live as `jupyter: command not found` for
+# students using a fresh terminal, even with jupyterlab successfully
+# installed. `sudo apt-get install -y jupyter-notebook jupyter` (automated in
+# scripts/install_pi_dependencies.sh) installs to /usr/bin, which is on PATH
+# by default for every account with no setup - this is the command students
+# should actually use (`jupyter notebook ...`); the pip jupyterlab above
+# remains available for the modern `jupyter lab` UI once PATH is set up.
 opencv-python-headless   # [install] pip fallback for OpenCV - prefer apt's python3-opencv on the Pi itself
 onnxruntime              # [install] car object detection (src/vision/object_detection.py) - verified installs
                          # cleanly via pip --user on this Pi (aarch64, Python 3.9.2), see NOTE above
