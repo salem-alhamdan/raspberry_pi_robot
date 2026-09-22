@@ -90,6 +90,33 @@ set -euo pipefail
 echo "=== AI Car workshop: Pi dependency installer ==="
 
 # ---------------------------------------------------------------------------
+# 0. pip --user install helper
+#
+# Debian 12+ (bookworm/trixie) ships a pip that enforces PEP 668
+# ("externally-managed-environment") and refuses plain `pip install --user`,
+# even into user site-packages. Debian 11 (bullseye)'s older pip does not
+# have this restriction and does not understand --break-system-packages at
+# all (passing it there is a hard "no such option" error). So: try the
+# plain install first (works on bullseye and on any environment without
+# PEP 668 enforcement), and only retry with --break-system-packages if that
+# specific install fails - this keeps the script working unmodified on both
+# the original bullseye/Python 3.9.2 target and newer Pi OS (trixie/Python
+# 3.13) images. --break-system-packages is safe here specifically because
+# this project intentionally installs system-wide, --user, with no venv.
+# ---------------------------------------------------------------------------
+pip_install_user() {
+    if ! pip3 install --user "$@" 2>/tmp/pip_install_user.err; then
+        if grep -q "externally-managed-environment" /tmp/pip_install_user.err; then
+            echo "pip3 refused as externally-managed (Debian 12+ PEP 668) - retrying with --break-system-packages..."
+            pip3 install --user --break-system-packages "$@"
+        else
+            cat /tmp/pip_install_user.err >&2
+            return 1
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # 1. OpenCV (prefer apt, fall back to pip if needed)
 # ---------------------------------------------------------------------------
 echo
@@ -111,7 +138,7 @@ else
     else
         echo "apt package did not provide a working cv2 import (or apt-get itself failed above)."
         echo "Falling back to pip: pip3 install --user opencv-python-headless"
-        if pip3 install --user opencv-python-headless; then
+        if pip_install_user opencv-python-headless; then
             python3 -c "import cv2; print('cv2', cv2.__version__)" \
                 || echo "WARNING: cv2 still not importable after pip fallback - install OpenCV manually later."
         else
@@ -134,7 +161,7 @@ if python3 -c "import picamera2" 2>/dev/null; then
 else
     echo "picamera2 import failed - likely the numpy/simplejpeg ABI mismatch"
     echo "described above. Reinstalling simplejpeg against the active numpy..."
-    pip3 install --user --force-reinstall --no-cache-dir simplejpeg \
+    pip_install_user --force-reinstall --no-cache-dir simplejpeg \
         || echo "WARNING: simplejpeg reinstall failed - picamera2 may remain broken, fix manually later."
 
     if python3 -c "import picamera2" 2>/dev/null; then
@@ -156,7 +183,7 @@ else
     echo "Installing onnxruntime via pip (--user, no sudo required)..."
     # See the design-notes comment above: confirmed on this Pi to install
     # from a prebuilt aarch64 wheel, no compilation needed.
-    pip3 install --user onnxruntime \
+    pip_install_user onnxruntime \
         || echo "WARNING: onnxruntime pip install failed - install manually later (pip3 install --user onnxruntime). src/vision/object_detection.py degrades gracefully without it (car detection is skipped, not required for the rest of the project)."
 
     if python3 -c "import onnxruntime" 2>/dev/null; then
@@ -183,7 +210,7 @@ else
     # this Pi (pip3 install --user --upgrade "tornado<6.5", landed on
     # 6.4.2). Pinning it here, in the same command, stops a fresh install
     # from letting pip silently re-resolve the broken tornado version.
-    pip3 install --user "jupyterlab" "tornado<6.5" \
+    pip_install_user "jupyterlab" "tornado<6.5" \
         || echo "WARNING: JupyterLab/tornado pip install failed - install manually later (pip3 install --user \"jupyterlab\" \"tornado<6.5\")."
 fi
 
@@ -212,7 +239,7 @@ if python3 -c "$FLASK_SELF_TEST" 2>/dev/null; then
 else
     echo "Flask is not working (broken import or broken request handling.)"
     echo "Installing pip3 install --user \"flask~=2.2.5\" \"werkzeug~=2.2.3\" (see design notes above for why both are pinned together)..."
-    pip3 install --user "flask~=2.2.5" "werkzeug~=2.2.3" \
+    pip_install_user "flask~=2.2.5" "werkzeug~=2.2.3" \
         || echo "WARNING: Flask/Werkzeug pip install failed - install manually later (pip3 install --user \"flask~=2.2.5\" \"werkzeug~=2.2.3\")."
 
     if python3 -c "$FLASK_SELF_TEST" 2>/dev/null; then
